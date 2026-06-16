@@ -1,4 +1,49 @@
-# n8n Continuous Sensor Pipeline (Testing Workflow)
+# n8n Python Testing Workflows
+
+Sample n8n workflows for testing **Python Code nodes**, **linear data passing** (output of node N → input of node N+1), and **continuous loops**.
+
+---
+
+## Workflow 1: Linear Order Pipeline (recommended)
+
+**Use case:** Simple order receipt calculator — each node adds one thing to the order and passes it to the next.
+
+| Node | Input | Output |
+|------|-------|--------|
+| 1. Generate Order | `cycle` from loop | `order_id`, `item`, `quantity`, `unit_price` |
+| 2. Calculate Subtotal | order | order + `subtotal` |
+| 3. Add Tax | order + subtotal | order + `tax_amount`, `total_before_discount` |
+| 4. Apply Discount | order + tax | order + `discount_amount`, `final_total` |
+| 5. Format Receipt | complete order | order + `receipt` (text) |
+| 6. Prepare Next Loop | receipt | `loop_payload` → feeds back into Node 1 |
+
+### Flow: 1 → 2 → 3 → 4 → 5 → 6 → 1
+
+```mermaid
+flowchart LR
+    W[Webhook] --> N1[1. Generate Order]
+    N1 --> N2[2. Subtotal]
+    N2 --> N3[3. Tax]
+    N3 --> N4[4. Discount]
+    N4 --> N5[5. Receipt]
+    N5 --> N6[6. Next Loop]
+    N6 --> H[HTTP Request]
+    H -->|loop_payload| W
+
+    M[Manual Start] --> N1
+```
+
+Each Python node reads `_items[0]["json"]` from the previous node and returns one output item for the next.
+
+**Import:** `workflows/linear-order-pipeline.json`
+
+**Python sources:** `python-nodes/linear/01_generate_order.py` … `06_prepare_next_loop.py`
+
+**Stop:** Deactivate the workflow.
+
+---
+
+## Workflow 2: Continuous Sensor Pipeline
 
 A sample n8n workflow with **6 Python Code nodes** that runs in a **continuous self-loop** until you manually stop it. Built for testing n8n Python execution, data passing between nodes, and long-running workflow patterns.
 
@@ -110,8 +155,16 @@ Severity: {'normal': 4, 'warning': 1, 'critical': 0}
 .
 ├── README.md
 ├── workflows/
-│   └── continuous-sensor-pipeline.json   # Import this into n8n
+│   ├── linear-order-pipeline.json          # 1→2→3→4→5→6→1 chain
+│   └── continuous-sensor-pipeline.json       # IoT simulation loop
 └── python-nodes/
+    ├── linear/                               # Order pipeline nodes
+    │   ├── 01_generate_order.py
+    │   ├── 02_calculate_subtotal.py
+    │   ├── 03_add_tax.py
+    │   ├── 04_apply_discount.py
+    │   ├── 05_format_receipt.py
+    │   └── 06_prepare_next_loop.py
     ├── 01_generate_sensor_data.py
     ├── 02_validate_readings.py
     ├── 03_normalize_readings.py
