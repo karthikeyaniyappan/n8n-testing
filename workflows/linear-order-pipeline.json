@@ -1,0 +1,360 @@
+{
+  "name": "Linear Order Pipeline (6 Python Nodes, Loop 6\u21921)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "order-pipeline-loop",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000001",
+      "name": "Webhook (Loop Entry \u2192 Node 1)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        300
+      ],
+      "webhookId": "order-pipeline-loop"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"accepted\": true, \"cycle\": $json.body?.cycle ?? $json.cycle ?? 0 } }}",
+        "options": {}
+      },
+      "id": "b2000002-0000-4000-8000-000000000002",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "import random\nimport string\nfrom datetime import datetime, timezone\n\nITEMS = [\"Coffee Mug\", \"Notebook\", \"USB Cable\", \"Desk Lamp\", \"Water Bottle\"]\n\nresults = []\n\nfor item in _items:\n    payload = item[\"json\"]\n    # Loop-back from webhook wraps body; manual start uses root fields.\n    if isinstance(payload.get(\"body\"), dict):\n        state = payload[\"body\"]\n    else:\n        state = payload\n\n    cycle = int(state.get(\"cycle\", 0))\n\n    order = {\n        \"cycle\": cycle,\n        \"order_id\": \"ORD-\" + \"\".join(random.choices(string.digits, k=5)),\n        \"item\": random.choice(ITEMS),\n        \"quantity\": random.randint(1, 5),\n        \"unit_price\": round(random.uniform(5.0, 50.0), 2),\n        \"created_at\": datetime.now(timezone.utc).isoformat(),\n    }\n\n    results.append({\"json\": order})\n\nreturn results\n"
+      },
+      "id": "b2000003-0000-4000-8000-000000000003",
+      "name": "1. Generate Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "results = []\n\nfor item in _items:\n    data = item[\"json\"]\n    subtotal = round(data[\"quantity\"] * data[\"unit_price\"], 2)\n    results.append({\"json\": {**data, \"subtotal\": subtotal}})\n\nreturn results\n"
+      },
+      "id": "b2000004-0000-4000-8000-000000000004",
+      "name": "2. Calculate Subtotal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "TAX_RATE = 0.08\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    tax_amount = round(data[\"subtotal\"] * TAX_RATE, 2)\n    results.append(\n        {\n            \"json\": {\n                **data,\n                \"tax_rate\": TAX_RATE,\n                \"tax_amount\": tax_amount,\n                \"total_before_discount\": round(data[\"subtotal\"] + tax_amount, 2),\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "b2000005-0000-4000-8000-000000000005",
+      "name": "3. Add Tax",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "DISCOUNT_THRESHOLD = 40.0\nDISCOUNT_PERCENT = 10\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    total_before = data[\"total_before_discount\"]\n\n    if total_before >= DISCOUNT_THRESHOLD:\n        discount_percent = DISCOUNT_PERCENT\n        discount_amount = round(total_before * (discount_percent / 100), 2)\n    else:\n        discount_percent = 0\n        discount_amount = 0.0\n\n    results.append(\n        {\n            \"json\": {\n                **data,\n                \"discount_percent\": discount_percent,\n                \"discount_amount\": discount_amount,\n                \"final_total\": round(total_before - discount_amount, 2),\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "b2000006-0000-4000-8000-000000000006",
+      "name": "4. Apply Discount",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "results = []\n\nfor item in _items:\n    data = item[\"json\"]\n\n    lines = [\n        f\"--- RECEIPT {data['order_id']} ---\",\n        f\"Item:     {data['item']}\",\n        f\"Qty:      {data['quantity']} x ${data['unit_price']:.2f}\",\n        f\"Subtotal: ${data['subtotal']:.2f}\",\n        f\"Tax ({int(data['tax_rate'] * 100)}%):    ${data['tax_amount']:.2f}\",\n    ]\n\n    if data[\"discount_amount\"] > 0:\n        lines.append(\n            f\"Discount ({data['discount_percent']}%): -${data['discount_amount']:.2f}\"\n        )\n\n    lines.append(f\"TOTAL:    ${data['final_total']:.2f}\")\n    lines.append(\"------------------------\")\n\n    results.append({\"json\": {**data, \"receipt\": \"\\n\".join(lines)}})\n\nreturn results\n"
+      },
+      "id": "b2000007-0000-4000-8000-000000000007",
+      "name": "5. Format Receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "results = []\n\nfor item in _items:\n    data = item[\"json\"]\n    cycle = int(data.get(\"cycle\", 0))\n    next_cycle = cycle + 1\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": cycle,\n                \"next_cycle\": next_cycle,\n                \"last_order_id\": data.get(\"order_id\"),\n                \"last_final_total\": data.get(\"final_total\"),\n                \"last_receipt\": data.get(\"receipt\"),\n                \"stage\": \"loop_ready\",\n                # This payload becomes the input for Node 1 on the next run.\n                \"loop_payload\": {\n                    \"cycle\": next_cycle,\n                    \"running\": True,\n                },\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "b2000008-0000-4000-8000-000000000008",
+      "name": "6. Prepare Next Loop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "b2000009-0000-4000-8000-000000000009",
+      "name": "Wait 2 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        300
+      ],
+      "webhookId": "wait-order-pipeline"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "REPLACE_WITH_YOUR_WEBHOOK_PRODUCTION_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.loop_payload }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "b2000010-0000-4000-8000-000000000010",
+      "name": "Loop Back to Node 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000011-0000-4000-8000-000000000011",
+      "name": "Manual Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "cycle",
+              "value": 0,
+              "type": "number"
+            },
+            {
+              "id": "a2",
+              "name": "running",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000012-0000-4000-8000-000000000012",
+      "name": "Set Initial State",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Linear Order Pipeline (6 Python Nodes)\n\n**Flow:** 1 \u2192 2 \u2192 3 \u2192 4 \u2192 5 \u2192 6 \u2192 (webhook) \u2192 **1** again\n\nEach node output = next node input.\n\n**Stop:** Deactivate workflow.",
+        "height": 200,
+        "width": 420
+      },
+      "id": "b2000013-0000-4000-8000-000000000013",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        40
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook (Loop Entry \u2192 Node 1)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        [
+          {
+            "node": "1. Generate Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Generate Order": {
+      "main": [
+        [
+          {
+            "node": "2. Calculate Subtotal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Calculate Subtotal": {
+      "main": [
+        [
+          {
+            "node": "3. Add Tax",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Add Tax": {
+      "main": [
+        [
+          {
+            "node": "4. Apply Discount",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Apply Discount": {
+      "main": [
+        [
+          {
+            "node": "5. Format Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Format Receipt": {
+      "main": [
+        [
+          {
+            "node": "6. Prepare Next Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Prepare Next Loop": {
+      "main": [
+        [
+          {
+            "node": "Wait 2 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Loop Back to Node 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Start": {
+      "main": [
+        [
+          {
+            "node": "Set Initial State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Initial State": {
+      "main": [
+        [
+          {
+            "node": "1. Generate Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 3600
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    {
+      "name": "testing"
+    },
+    {
+      "name": "python"
+    },
+    {
+      "name": "linear"
+    }
+  ]
+}

@@ -1,0 +1,357 @@
+{
+  "name": "Continuous Sensor Pipeline (6 Python Nodes)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sensor-pipeline-loop",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "sensor-pipeline-loop"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"accepted\": true, \"cycle\": $json.body?.cycle ?? $json.cycle ?? 0 } }}",
+        "options": {}
+      },
+      "id": "a1000002-0000-4000-8000-000000000002",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "import random\nfrom datetime import datetime, timezone\n\nSENSOR_TYPES = [\"temperature\", \"humidity\", \"pressure\", \"voltage\"]\nUNITS = {\n    \"temperature\": \"C\",\n    \"humidity\": \"%\",\n    \"pressure\": \"hPa\",\n    \"voltage\": \"V\",\n}\n\nresults = []\n\nfor item in _items:\n    payload = item[\"json\"]\n    # Webhook POST bodies arrive under \"body\"; manual start uses root fields.\n    if isinstance(payload.get(\"body\"), dict):\n        state = payload[\"body\"]\n    else:\n        state = payload\n\n    cycle = int(state.get(\"cycle\", 0))\n\n    readings = []\n    for index in range(5):\n        sensor_type = SENSOR_TYPES[index % len(SENSOR_TYPES)]\n        readings.append(\n            {\n                \"sensor_id\": f\"SNR-{sensor_type[:3].upper()}-{index + 1:02d}\",\n                \"sensor_type\": sensor_type,\n                \"raw_value\": round(random.uniform(10, 100), 2),\n                \"unit\": UNITS[sensor_type],\n                \"timestamp\": datetime.now(timezone.utc).isoformat(),\n            }\n        )\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": cycle,\n                \"running\": payload.get(\"running\", True),\n                \"stage\": \"generated\",\n                \"readings\": readings,\n                \"generated_at\": datetime.now(timezone.utc).isoformat(),\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000003-0000-4000-8000-000000000003",
+      "name": "1. Generate Sensor Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "REQUIRED_FIELDS = [\"sensor_id\", \"sensor_type\", \"raw_value\", \"unit\", \"timestamp\"]\nVALID_TYPES = {\"temperature\", \"humidity\", \"pressure\", \"voltage\"}\nVALUE_RANGES = {\n    \"temperature\": (-50, 150),\n    \"humidity\": (0, 100),\n    \"pressure\": (800, 1200),\n    \"voltage\": (0, 500),\n}\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    readings = data.get(\"readings\", [])\n    validated = []\n    errors = []\n\n    for index, reading in enumerate(readings):\n        missing = [field for field in REQUIRED_FIELDS if field not in reading]\n        if missing:\n            errors.append({\"index\": index, \"error\": f\"Missing fields: {missing}\"})\n            continue\n\n        sensor_type = reading[\"sensor_type\"]\n        if sensor_type not in VALID_TYPES:\n            errors.append(\n                {\"index\": index, \"error\": f\"Invalid sensor_type: {sensor_type}\"}\n            )\n            continue\n\n        low, high = VALUE_RANGES[sensor_type]\n        value = reading[\"raw_value\"]\n        if not isinstance(value, (int, float)) or value < low or value > high:\n            errors.append(\n                {\n                    \"index\": index,\n                    \"error\": f\"Value {value} out of range [{low}, {high}]\",\n                }\n            )\n            continue\n\n        validated.append({**reading, \"valid\": True})\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": data.get(\"cycle\", 0),\n                \"running\": data.get(\"running\", True),\n                \"stage\": \"validated\",\n                \"readings\": validated,\n                \"validation_errors\": errors,\n                \"validation_passed\": len(errors) == 0,\n                \"valid_count\": len(validated),\n                \"generated_at\": data.get(\"generated_at\"),\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000004-0000-4000-8000-000000000004",
+      "name": "2. Validate Readings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "NORMALIZATION = {\n    \"temperature\": {\"offset\": 0, \"scale\": 1.0},\n    \"humidity\": {\"offset\": 0, \"scale\": 1.0},\n    \"pressure\": {\"offset\": 900, \"scale\": 0.1},\n    \"voltage\": {\"offset\": 0, \"scale\": 0.01},\n}\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    normalized = []\n\n    for reading in data.get(\"readings\", []):\n        config = NORMALIZATION[reading[\"sensor_type\"]]\n        raw_value = reading[\"raw_value\"]\n        normalized_value = round((raw_value - config[\"offset\"]) * config[\"scale\"], 4)\n        normalized.append(\n            {\n                **reading,\n                \"normalized_value\": normalized_value,\n                \"calibration_applied\": True,\n            }\n        )\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": data.get(\"cycle\", 0),\n                \"running\": data.get(\"running\", True),\n                \"stage\": \"normalized\",\n                \"validation_passed\": data.get(\"validation_passed\", False),\n                \"valid_count\": data.get(\"valid_count\", 0),\n                \"validation_errors\": data.get(\"validation_errors\", []),\n                \"readings\": normalized,\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000005-0000-4000-8000-000000000005",
+      "name": "3. Normalize Readings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "import math\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    readings = data.get(\"readings\", [])\n\n    values = [reading[\"normalized_value\"] for reading in readings]\n    count = len(values)\n\n    if count == 0:\n        mean = 0.0\n        std = 0.0\n    else:\n        mean = sum(values) / count\n        variance = sum((value - mean) ** 2 for value in values) / count\n        std = math.sqrt(variance) if variance > 0 else 0.0\n\n    flagged = []\n    anomaly_count = 0\n\n    for reading in readings:\n        value = reading[\"normalized_value\"]\n        if std > 0:\n            z_score = abs((value - mean) / std)\n        else:\n            z_score = 0.0\n\n        is_anomaly = z_score > 1.5\n        if is_anomaly:\n            anomaly_count += 1\n\n        if z_score > 2.5:\n            severity = \"critical\"\n        elif is_anomaly:\n            severity = \"warning\"\n        else:\n            severity = \"normal\"\n\n        flagged.append(\n            {\n                **reading,\n                \"z_score\": round(z_score, 4),\n                \"is_anomaly\": is_anomaly,\n                \"severity\": severity,\n            }\n        )\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": data.get(\"cycle\", 0),\n                \"running\": data.get(\"running\", True),\n                \"stage\": \"anomaly_checked\",\n                \"validation_passed\": data.get(\"validation_passed\", False),\n                \"valid_count\": data.get(\"valid_count\", 0),\n                \"readings\": flagged,\n                \"batch_stats\": {\n                    \"mean\": round(mean, 4),\n                    \"std\": round(std, 4),\n                    \"count\": count,\n                },\n                \"anomaly_count\": anomaly_count,\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000006-0000-4000-8000-000000000006",
+      "name": "4. Detect Anomalies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "from collections import defaultdict\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    readings = data.get(\"readings\", [])\n\n    by_type = defaultdict(list)\n    for reading in readings:\n        by_type[reading[\"sensor_type\"]].append(reading[\"normalized_value\"])\n\n    aggregates = {}\n    for sensor_type, values in by_type.items():\n        aggregates[sensor_type] = {\n            \"count\": len(values),\n            \"min\": round(min(values), 4),\n            \"max\": round(max(values), 4),\n            \"avg\": round(sum(values) / len(values), 4),\n        }\n\n    severity_counts = {\"normal\": 0, \"warning\": 0, \"critical\": 0}\n    for reading in readings:\n        severity = reading.get(\"severity\", \"normal\")\n        severity_counts[severity] = severity_counts.get(severity, 0) + 1\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": data.get(\"cycle\", 0),\n                \"running\": data.get(\"running\", True),\n                \"stage\": \"aggregated\",\n                \"aggregates_by_type\": aggregates,\n                \"severity_counts\": severity_counts,\n                \"anomaly_count\": data.get(\"anomaly_count\", 0),\n                \"batch_stats\": data.get(\"batch_stats\", {}),\n                \"readings\": readings,\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000007-0000-4000-8000-000000000007",
+      "name": "5. Aggregate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "mode": "runOnceForAllItems",
+        "pythonCode": "from datetime import datetime, timezone\n\nresults = []\n\nfor item in _items:\n    data = item[\"json\"]\n    cycle = int(data.get(\"cycle\", 0))\n    anomaly_count = data.get(\"anomaly_count\", 0)\n    severity_counts = data.get(\"severity_counts\", {})\n\n    if severity_counts.get(\"critical\", 0) > 0:\n        status = \"CRITICAL\"\n    elif anomaly_count > 0:\n        status = \"DEGRADED\"\n    else:\n        status = \"HEALTHY\"\n\n    report_lines = [\n        f\"=== Sensor Pipeline Report | Cycle {cycle} ===\",\n        f\"Status: {status}\",\n        f\"Anomalies: {anomaly_count}\",\n        f\"Severity: {severity_counts}\",\n    ]\n\n    for sensor_type, aggregate in data.get(\"aggregates_by_type\", {}).items():\n        report_lines.append(\n            \"  \"\n            + f\"{sensor_type}: avg={aggregate['avg']} \"\n            + f\"min={aggregate['min']} max={aggregate['max']} \"\n            + f\"(n={aggregate['count']})\"\n        )\n\n    report_text = \"\\n\".join(report_lines)\n\n    results.append(\n        {\n            \"json\": {\n                \"cycle\": cycle,\n                \"running\": data.get(\"running\", True),\n                \"stage\": \"complete\",\n                \"status\": status,\n                \"report\": report_text,\n                \"summary\": {\n                    \"cycle\": cycle,\n                    \"status\": status,\n                    \"anomaly_count\": anomaly_count,\n                    \"severity_counts\": severity_counts,\n                    \"aggregates_by_type\": data.get(\"aggregates_by_type\", {}),\n                },\n                \"completed_at\": datetime.now(timezone.utc).isoformat(),\n                \"next_cycle\": cycle + 1,\n                \"loop_payload\": {\n                    \"cycle\": cycle + 1,\n                    \"running\": True,\n                },\n            }\n        }\n    )\n\nreturn results\n"
+      },
+      "id": "a1000008-0000-4000-8000-000000000008",
+      "name": "6. Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "a1000009-0000-4000-8000-000000000009",
+      "name": "Wait 3 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        300
+      ],
+      "webhookId": "wait-sensor-pipeline"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "REPLACE_WITH_YOUR_WEBHOOK_PRODUCTION_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.loop_payload }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1000010-0000-4000-8000-000000000010",
+      "name": "Loop Back (HTTP Request)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a1000011-0000-4000-8000-000000000011",
+      "name": "Manual Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6800c507-23de-4f3b-bd2d-831d7ed6c1a5",
+              "name": "cycle",
+              "value": 0,
+              "type": "number"
+            },
+            {
+              "id": "e19a0179-d93c-4f7f-9517-544fd1456fbe",
+              "name": "running",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000012-0000-4000-8000-000000000012",
+      "name": "Set Initial State",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Continuous IoT Sensor Simulation Pipeline\n\n**Use case:** Generates fake sensor data each cycle, validates it, normalizes values, detects anomalies, aggregates metrics, and logs a report.\n\n**Start:** Activate workflow, paste Production Webhook URL into **Loop Back** node, then click **Manual Start** or POST to the webhook.\n\n**Stop:** Toggle workflow to **Inactive**.",
+        "height": 280,
+        "width": 520
+      },
+      "id": "a1000013-0000-4000-8000-000000000013",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -80
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        [
+          {
+            "node": "1. Generate Sensor Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Generate Sensor Data": {
+      "main": [
+        [
+          {
+            "node": "2. Validate Readings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Validate Readings": {
+      "main": [
+        [
+          {
+            "node": "3. Normalize Readings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Normalize Readings": {
+      "main": [
+        [
+          {
+            "node": "4. Detect Anomalies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Detect Anomalies": {
+      "main": [
+        [
+          {
+            "node": "5. Aggregate Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Aggregate Metrics": {
+      "main": [
+        [
+          {
+            "node": "6. Format Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Format Report": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Loop Back (HTTP Request)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Start": {
+      "main": [
+        [
+          {
+            "node": "Set Initial State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Initial State": {
+      "main": [
+        [
+          {
+            "node": "1. Generate Sensor Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 3600
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    {
+      "name": "testing"
+    },
+    {
+      "name": "python"
+    }
+  ]
+}
