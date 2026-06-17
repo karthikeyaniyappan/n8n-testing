@@ -8,6 +8,8 @@ Sample n8n workflows for testing **Python Code nodes**, **linear data passing** 
 
 **Use case:** Simple order receipt calculator — each node adds one thing to the order and passes it to the next.
 
+**Language:** JavaScript (works on self-hosted n8n without Python task runners).
+
 | Node | Input | Output |
 |------|-------|--------|
 | 1. Generate Order | `cycle` from loop | `order_id`, `item`, `quantity`, `unit_price` |
