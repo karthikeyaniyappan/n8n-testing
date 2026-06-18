@@ -1,9 +1,3 @@
-# Trimble Identity & Authentication — Study Notes
-
-> Source: [docs.trimblecloud.com](https://docs.trimblecloud.com) (internal) · Public API docs: [developer.trimble.com/docs/authentication](https://developer.trimble.com/docs/authentication/)
-
----
-
 ## Trimble Identity (TID)
 
 - **Trimble ID** is a centralized authentication service built on industry-standard protocols: **OAuth 2.0**, **OpenID Connect**, and **SAML 2.0**.
